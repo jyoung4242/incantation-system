@@ -1,5 +1,22 @@
-import { Actor, CollisionType, Color, Engine, KeyEvent, Keys, Rectangle, Shape, SoundEvents, Subscription, Vector } from "excalibur";
+import {
+  Actor,
+  CollisionType,
+  Color,
+  Engine,
+  Graphic,
+  KeyEvent,
+  Keys,
+  Material,
+  Raster,
+  Rectangle,
+  Shape,
+  SoundEvents,
+  Subscription,
+  Vector,
+} from "excalibur";
 import { Resources } from "./assets/resources";
+//@ts-expect-error
+import { outlineShader } from "./outline";
 
 type IncSequence = IncWidget[] | "random";
 
@@ -9,6 +26,7 @@ export interface IncConfig {
   numberOfWidgets?: number;
   engine: Engine;
   keyboardManager: KeyboardManager;
+  targetRegionBuffer: number;
 }
 
 export class Incantation extends Actor {
@@ -38,7 +56,7 @@ export class Incantation extends Actor {
       this.sequence = config.sequence;
       this.numWidgets = this.sequence.length;
     }
-    console.log(this.keyboardManager);
+    console.log("speed: ", this.speed);
 
     this.keyboardManager.registerOwner(new IncantationBindings());
     this.keyboardManager.setOwner("incanctationBinding", this.targetRegion);
@@ -54,7 +72,6 @@ export class Incantation extends Actor {
         sequence.push(new enterButton(this.engine));
       } else {
         const rand = Math.floor(Math.random() * 4);
-        console.log(rand);
 
         switch (rand) {
           case 0:
@@ -80,16 +97,15 @@ export class Incantation extends Actor {
     for (let i = 0; i < this.numWidgets; i++) {
       this.tikTargets.push(this.speed * i);
     }
-    console.log(this.tikTargets);
   }
 
   onPreUpdate(engine: Engine, delta: number): void {
     this.tikTargets.forEach((target, index) => {
       if (this.timerTik === target) {
         // add child of index
-        console.log("adding child of index " + index);
-        console.log(this.sequence[index]);
+
         this.sequence[index].setSpeed(this.speed);
+        this.sequence[index].setIncantation(this);
         this.addChild(this.sequence[index]);
       }
     });
@@ -101,29 +117,61 @@ export class Incantation extends Actor {
 
 const capsuleCollider = Shape.Capsule(16, 8, new Vector(0, 0));
 class IncWidget extends Actor {
+  isHighlighted = false;
+  incantation: Incantation | undefined;
   isColliding = false;
+  isCleared = false;
   timerTik = 0;
   dirVector: Vector = new Vector(0, 1);
+  material: Material;
   constructor(public engine: Engine, public speed: number = 50) {
     super({
       width: 16,
       height: 16,
-      collider: capsuleCollider,
+      collider: Shape.Capsule(16, 8, new Vector(0, 0)),
       collisionType: CollisionType.Passive,
     });
     this.pos = new Vector(0, 0);
     this.scale = new Vector(0.5, 0.5);
+    this.material = engine.graphicsContext.createMaterial({
+      name: "outline",
+      fragmentSource: outlineShader,
+    });
   }
 
   onInitialize(engine: Engine): void {
     this.on("collisionstart", ev => {
-      if (ev.actor instanceof IncTargetRegion) {
+      if (ev.other instanceof IncTargetRegion) {
         this.isColliding = true;
       }
     });
     this.on("collisionend", ev => {
-      if (ev.actor instanceof IncTargetRegion) {
-        this.isColliding = false;
+      if (ev.other instanceof IncTargetRegion) {
+        // button left target region
+        // should kill button after delay
+        if (!this.isCleared) {
+          setTimeout(() => {
+            console.log("button left the target region", this);
+
+            sndPlugin.playSound("wrongmove");
+            if (this.incantation) {
+              this.incantation.engine.backgroundColor = Color.Red;
+              setTimeout(() => {
+                if (this.incantation) this.incantation.engine.backgroundColor = Color.ExcaliburBlue;
+              }, 250);
+            }
+
+            if (this instanceof enterButton) {
+              if (!this.incantation) return;
+              const event = new CustomEvent("incantationComplete", { detail: this.incantation.score });
+              document.dispatchEvent(event);
+              this.incantation.keyboardManager.setOwner("main");
+              this.incantation.kill();
+            }
+
+            this.kill();
+          }, 300);
+        }
       }
     });
   }
@@ -132,11 +180,34 @@ class IncWidget extends Actor {
     this.speed = speed;
   }
 
+  setIncantation(incantation: Incantation) {
+    this.incantation = incantation;
+  }
+
   onPreUpdate(engine: Engine, delta: number): void {
+    console.log(this.name, this.isColliding, this.isHighlighted);
+
+    if (this.isColliding) {
+      if (
+        this.incantation?.targetRegion.collider.bounds.contains(this.collider.bounds.topLeft) &&
+        this.incantation?.targetRegion.collider.bounds.contains(this.collider.bounds.bottomRight)
+      ) {
+        this.isHighlighted = true;
+        this.graphics.material = this.material;
+      } else {
+        this.isHighlighted = false;
+      }
+    }
+
+    if (this.graphics.material) {
+      this.graphics.material.update(shader => {
+        shader.trySetUniformBoolean("u_ready", this.isHighlighted);
+      });
+    }
     this.timerTik += 1;
 
     this.pos = this.pos.add(this.dirVector.scale(this.timerTik / this.speed));
-    this.scale = this.scale.add(new Vector(0.02, 0.02));
+    this.scale = this.scale.add(new Vector(0.025, 0.025));
   }
 }
 
@@ -190,52 +261,108 @@ class IncTargetRegion extends Actor {
   constructor(public incantation: Incantation) {
     super({
       width: 300,
-      height: 75,
+      height: 90,
       color: Color.fromHex("#33333370"),
       collider: RectangleCollider,
       collisionType: CollisionType.Active,
     });
 
+    const myBorder = new Rectangle({
+      width: 300,
+      height: 75,
+      lineWidth: 1,
+      strokeColor: Color.White,
+      color: Color.Transparent,
+    });
+
+    this.graphics.use(myBorder);
+
     this.pos = new Vector(0, 200);
   }
 
-  public leftButton() {
-    //get list of leftbuttons
-    console.log("in left button callback");
-
-    console.log(this.incantation.children);
-
-    this.incantation.children.forEach(child => {
-      console.log(child, (child as IncWidget).isColliding);
-
-      if (child instanceof leftButton && child.isColliding) {
-        console.log("left button colliding");
-        console.log(this.collider.bounds);
-        console.log(child.collider.bounds.topLeft.clone());
-        console.log(child.collider.bounds.bottomRight.clone());
-
-        console.log(this.collider.bounds.contains(child.collider.bounds.topLeft));
-        console.log(this.collider.bounds.contains(child.collider.bounds.bottomRight));
-
-        if (
-          this.collider.bounds.contains(child.collider.bounds.topLeft) &&
-          this.collider.bounds.contains(child.collider.bounds.bottomRight)
-        ) {
-          sndPlugin.playSound("leftbutton");
-          this.incantation.score += 1;
-          this.kill();
-        }
+  buttonPress(sndString: string) {
+    //filter by button type
+    const buttons = this.incantation.children.filter(child => {
+      switch (sndString) {
+        case "leftbutton":
+          return child instanceof leftButton;
+        case "rightbutton":
+          return child instanceof rightButton;
+        case "upbutton":
+          return child instanceof upButton;
+        case "downbutton":
+          return child instanceof downButton;
+        case "enterbutton":
+          return child instanceof enterButton;
       }
     });
+
+    if (buttons.length > 0) {
+      // found buttons
+      // need lowest y button
+
+      function isEnterButton(button: IncWidget) {
+        if (button.incantation) {
+          const event = new CustomEvent("incantationComplete", { detail: button.incantation.score });
+          document.dispatchEvent(event);
+          button.incantation.keyboardManager.setOwner("main");
+          button.incantation.kill();
+        }
+      }
+
+      const sortedButtons = buttons.sort((a, b) => {
+        return (b as IncWidget).pos.y - (a as IncWidget).pos.y;
+      });
+      const buttonToTest = sortedButtons[0] as IncWidget;
+
+      if (buttonToTest.isColliding) {
+        if (
+          this.collider.bounds.contains(buttonToTest.collider.bounds.topLeft) &&
+          this.collider.bounds.contains(buttonToTest.collider.bounds.bottomRight)
+        ) {
+          sndPlugin.playSound(sndString);
+          buttonToTest.isCleared = true;
+          this.incantation.score += 1;
+          buttonToTest.kill();
+        } else {
+          // closeest button not inside target region
+          console.log("closest button not inside target region", buttonToTest);
+          sndPlugin.playSound("wrongmove");
+          this.incantation.score -= 1;
+          buttonToTest.isCleared = true;
+          this.incantation.engine.backgroundColor = Color.Red;
+          setTimeout(() => {
+            this.incantation.engine.backgroundColor = Color.ExcaliburBlue;
+          }, 250);
+        }
+        if (buttonToTest instanceof enterButton) isEnterButton(buttonToTest);
+      } else {
+        // closest button not hitting target region
+        sndPlugin.playSound("wrongmove");
+        console.log(sortedButtons, buttonToTest.isColliding);
+        console.log("closest button not hitting target region", buttonToTest);
+        buttonToTest.isCleared = true;
+        this.incantation.score -= 1;
+        this.incantation.engine.backgroundColor = Color.Red;
+        setTimeout(() => {
+          this.incantation.engine.backgroundColor = Color.ExcaliburBlue;
+        }, 250);
+        if (buttonToTest instanceof enterButton) isEnterButton(buttonToTest);
+      }
+    } else {
+      //no buttons in play of that type
+      sndPlugin.playSound("wrongmove");
+      console.log("no buttons in play of that type");
+
+      this.incantation.score -= 1;
+      this.incantation.engine.backgroundColor = Color.Red;
+      setTimeout(() => {
+        this.incantation.engine.backgroundColor = Color.ExcaliburBlue;
+      }, 250);
+    }
+    const debugTimer = this.incantation.engine.debug.useTestClock();
+    debugTimer.stop();
   }
-
-  public rightButton() {}
-
-  public upButton() {}
-
-  public downButton() {}
-
-  public enterButton() {}
 }
 //#endregion widgets
 
@@ -253,17 +380,13 @@ class IncantationBindings extends ExState {
   enter(_previous: ExState | null, ...params: any): void | Promise<void> {
     const engine = params[0] as Engine;
     const target = params[1][0] as IncTargetRegion;
-    console.log("setting up key bindings");
-    console.log(target);
 
     this.handler = engine.input.keyboard.on("press", (evt: KeyEvent) => {
-      console.log(evt.key, " pressed");
-
-      if (evt.key === Keys.ArrowUp) target.upButton();
-      if (evt.key === Keys.ArrowDown) target.downButton();
-      if (evt.key === Keys.ArrowLeft) target.leftButton();
-      if (evt.key === Keys.ArrowRight) target.rightButton();
-      if (evt.key === Keys.Enter) target.enterButton();
+      if (evt.key === Keys.ArrowUp) target.buttonPress("upbutton");
+      if (evt.key === Keys.ArrowDown) target.buttonPress("downbutton");
+      if (evt.key === Keys.ArrowLeft) target.buttonPress("leftbutton");
+      if (evt.key === Keys.ArrowRight) target.buttonPress("rightbutton");
+      if (evt.key === Keys.Enter) target.buttonPress("enterbutton");
     });
   }
   exit(_next: ExState | null, ...params: any): void | Promise<void> {
